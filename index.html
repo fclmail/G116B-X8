@@ -1,0 +1,463 @@
+<!DOCTYPE html> <!-- 🟢 1: HTML5 document -->
+<html lang="en"> <!-- 🟢 2: English language -->
+<head>
+  <meta charset="UTF-8" /> <!-- 🟢 3: Encoding -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/> <!-- 🟢 4: Mobile scaling -->
+  <title>Arb Scanner + Profit Guards</title> <!-- 🟢 5: Title -->
+  <!-- Ethers v5 (kept for MetaMask compatibility) -->
+  <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script> <!-- 🟢 6 -->
+  <style>
+    body{background:#0a0;color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif;padding:20px} /* 🟢 7 */
+    h1{margin:0 0 10px} /* 🟢 8 */
+    .row{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:8px 0} /* 🟢 9 */
+    input,select{padding:6px;border-radius:6px;border:1px solid #2b2} /* 🟢 10 */
+    button{padding:8px 14px;border-radius:8px;border:none;background:#142;color:#fff;cursor:pointer} /* 🟢 11 */
+    button:hover{background:#163} /* 🟢 12 */
+    table{width:100%;border-collapse:collapse;margin-top:12px} /* 🟢 13 */
+    th,td{border:1px solid #262;padding:8px;text-align:center} /* 🟢 14 */
+    .profitable{background:#9f9;color:#000;font-weight:700} /* 🟢 15 */
+    #log{background:#031; border:1px solid #262; padding:10px; max-height:220px; overflow:auto; margin-top:10px} /* 🟢 16 */
+    .warn{color:#ff0} /* 🟢 17 */
+    .bad{color:#f66} /* 🟢 18 */
+    .good{color:#0f0} /* 🟢 19 */
+    .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#133;margin-left:6px;font-size:.85em} /* 🟢 20 */
+  </style>
+</head>
+<body>
+  <h1>Arbitrage Scanner <span class="pill">with Profit Guards</span></h1> <!-- 🟢 21 -->
+
+  <!-- Wallet + status -->
+  <div class="row"> <!-- 🟢 22 -->
+    <button id="connectWallet">Connect Wallet</button> <!-- 🟢 23 -->
+    <span><b>Wallet:</b> <span id="wallet">-</span></span> <!-- 🟢 24 -->
+    <span><b>USDC (wallet):</b> <span id="walletBalance">-</span></span> <!-- 🟢 25 -->
+    <span><b>USDC (contract):</b> <span id="contractBalance">-</span></span> <!-- 🟢 26 -->
+    <span><b>Chain:</b> <span id="chainLabel">-</span></span> <!-- 🟢 27 -->
+  </div>
+
+  <!-- Controls -->
+  <div class="row"> <!-- 🟢 28 -->
+    <button id="scanNow">Scan Now</button> <!-- 🟢 29 -->
+    <button id="startScan">Start</button> <!-- 🟢 30 -->
+    <button id="stopScan">Stop</button> <!-- 🟢 31 -->
+    <button id="withdrawUSDC">Withdraw USDC</button> <!-- 🟢 32 -->
+  </div>
+
+  <!-- Profit guards & trade params -->
+  <div class="row"> <!-- 🟢 33 -->
+    <label>Min Profit % <input id="minProfitPct" type="number" step="0.1" min="0" value="0.20"></label> <!-- 🟢 34 -->
+    <label>Amount (USDC) <input id="tradeAmount" type="number" min="1" value="10"></label> <!-- 🟢 35 -->
+    <label>Slippage % <input id="slippagePct" type="number" step="0.1" min="0" value="0"></label> <!-- 🟢 36 -->
+    <label><input type="checkbox" id="usePrivateTx"> Use Private/Protect RPC</label> <!-- 🟢 37: Toggle for private submission -->
+  </div>
+
+  <div class="row"> <!-- 🟢 38 -->
+    <span id="privateHint" class="warn">Tip: For true private submission, set your wallet’s RPC to a Protect/private endpoint. This UI will warn if not detected.</span> <!-- 🟢 39 -->
+  </div>
+
+  <!-- Table -->
+  <table id="resultTable"> <!-- 🟢 40 -->
+    <thead>
+      <tr>
+        <th>Token</th> <!-- 🟢 41 -->
+        <th>Buy Router</th> <!-- 🟢 42 -->
+        <th>Sell Router</th> <!-- 🟢 43 -->
+        <th>Buy Price</th> <!-- 🟢 44 -->
+        <th>Sell Price</th> <!-- 🟢 45 -->
+        <th>Profit $ (slip)</th> <!-- 🟢 46 -->
+        <th>Profit % (slip)</th> <!-- 🟢 47 -->
+        <th>Status</th> <!-- 🟢 48 -->
+        <th>Action</th> <!-- 🟢 49 -->
+      </tr>
+    </thead>
+    <tbody id="results"></tbody> <!-- 🟢 50 -->
+  </table>
+
+  <!-- Log -->
+  <div id="log"></div> <!-- 🟢 51 -->
+
+  <script>
+    // ======== CONFIG & STATE ========
+
+    // 🟢 52: Addresses (Polygon examples; update to your target chain if needed)
+    const USDC = {
+      symbol: "USDC",
+      address: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+      decimals: 6
+    };
+    const WETH = {
+      symbol: "WETH",
+      address: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",
+      decimals: 18
+    };
+
+    // 🟢 53: Routers (UniswapV2-like on Polygon for demo)
+    const routers = {
+      QuickSwap: "0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff",
+      SushiSwap: "0x1b02da8cb0d097eb8d57a175b88c7d8b47997506",
+      Dfyn:      "0xA8b607Aa09B6A2641cF6F90f643E76d3f6e6Ff73",
+      ApeSwap:   "0xC0788A3aD43d79aa53B09c2EaCc313A787d1d607"
+    };
+
+    // 🟢 54: Tokens to scan (add more)
+    const tokens = {
+      WETH
+      // add others…
+    };
+
+    // 🟢 55: Minimal ABIs
+    const ERC20_ABI = [
+      "function balanceOf(address) view returns (uint256)",
+      "function decimals() view returns (uint8)",
+      "function transfer(address,uint256) returns (bool)"
+    ];
+    const ROUTER_ABI = [
+      "function getAmountsOut(uint256 amountIn, address[] calldata path) external view returns (uint256[] memory amounts)"
+    ];
+
+    // 🟢 56: Your arbitrage contract (PLACEHOLDER! Provide your real ABI + address)
+    const CONTRACT_ADDRESS = "0xYourContractAddressHere";
+    const CONTRACT_ABI = [
+      // Must match your deployed contract
+      "function executeArbitrage(address token,address buyRouter,address sellRouter,uint256 amountIn) external returns (int256)",
+      "function withdrawUSDC() external",
+      "function callStatic_executeArb(address token,address buyRouter,address sellRouter,uint256 amountIn) view returns (int256)" // optional helper; not required
+    ];
+
+    // 🟢 57: Ethers objects
+    let provider, signer, walletAddress, contract;
+
+    // 🟢 58: UI state
+    let isScanning = false, scanInterval = null;
+
+    // ======== UTILITIES ========
+
+    function log(msg, cls=""){ // 🟢 59
+      const el = document.getElementById("log");
+      const line = document.createElement("div");
+      if(cls) line.className = cls;
+      line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      el.prepend(line);
+    }
+
+    function fmt(n, d=6){ // 🟢 60: Fixed decimals
+      return Number(n).toFixed(d);
+    }
+
+    // ======== WALLET ========
+
+    document.getElementById("connectWallet").addEventListener("click", connectWallet); // 🟢 61
+    document.getElementById("scanNow").addEventListener("click", manualScan); // 🟢 62
+    document.getElementById("startScan").addEventListener("click", startScan); // 🟢 63
+    document.getElementById("stopScan").addEventListener("click", stopScan); // 🟢 64
+    document.getElementById("withdrawUSDC").addEventListener("click", withdrawUSDC); // 🟢 65
+
+    async function connectWallet(){ // 🟢 66
+      try{
+        if(!window.ethereum) throw new Error("No injected wallet found");
+        provider = new ethers.providers.Web3Provider(window.ethereum);
+        await provider.send("eth_requestAccounts",[]);
+        signer = provider.getSigner();
+        walletAddress = await signer.getAddress();
+        document.getElementById("wallet").textContent = walletAddress;
+        const net = await provider.getNetwork();
+        document.getElementById("chainLabel").textContent = `${net.name || "chain"} (id ${net.chainId})`;
+        contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+        await refreshBalances();
+        warnIfNotPrivateRPC();
+        log("Wallet connected ✓","good");
+      }catch(e){
+        log("Wallet connect failed: "+e.message,"bad");
+      }
+    }
+
+    async function refreshBalances(){ // 🟢 67
+      if(!provider || !walletAddress) return;
+      const usdc = new ethers.Contract(USDC.address, ERC20_ABI, provider);
+      const [wb, cb] = await Promise.all([
+        usdc.balanceOf(walletAddress),
+        usdc.balanceOf(CONTRACT_ADDRESS)
+      ]);
+      document.getElementById("walletBalance").textContent = fmt(ethers.utils.formatUnits(wb, USDC.decimals), 6);
+      document.getElementById("contractBalance").textContent = fmt(ethers.utils.formatUnits(cb, USDC.decimals), 6);
+    }
+
+    async function withdrawUSDC(){ // 🟢 68
+      try{
+        const tx = await contract.withdrawUSDC();
+        log("Withdrawing… tx: "+tx.hash);
+        await tx.wait();
+        await refreshBalances();
+        log("Withdraw complete","good");
+      }catch(e){
+        log("Withdraw failed: "+e.message,"bad");
+      }
+    }
+
+    // ======== SCAN ========
+
+    async function manualScan(){ // 🟢 69
+      if(isScanning) return log("Scan already running");
+      await scanAndRender();
+    }
+
+    function startScan(){ // 🟢 70
+      if(scanInterval) return;
+      scanInterval = setInterval(()=>{ if(!isScanning) scanAndRender(); }, 30000);
+      log("Auto scan started","good");
+    }
+
+    function stopScan(){ // 🟢 71
+      if(scanInterval){ clearInterval(scanInterval); scanInterval=null; }
+      log("Auto scan stopped","warn");
+    }
+
+    async function scanAndRender(){ // 🟢 72
+      if(!provider || !walletAddress) return log("Connect wallet first","warn");
+      isScanning = true;
+      const tbody = document.getElementById("results");
+      tbody.innerHTML = "";
+
+      const minProfitPct = parseFloat(document.getElementById("minProfitPct").value || "0");
+      const tradeAmount = parseFloat(document.getElementById("tradeAmount").value || "0");
+      const slippagePct = parseFloat(document.getElementById("slippagePct").value || "0");
+      const amountIn = ethers.utils.parseUnits(String(tradeAmount), USDC.decimals);
+
+      log("Scanning routers…");
+
+      for(const [sym, token] of Object.entries(tokens)){
+        for(const [buyName,buyRouter] of Object.entries(routers)){
+          for(const [sellName,sellRouter] of Object.entries(routers)){
+            if(buyName===sellName) continue;
+
+            try{
+              // 🟢 73: On-chain quotes
+              const buyOut = await getAmountOutUSDCtoToken(buyRouter, token.address, amountIn);
+              const sellOut = await getAmountOutTokenToUSDC(sellRouter, token.address, buyOut);
+
+              // 🟢 74: Derive prices & profit
+              const tokensReceived = parseFloat(ethers.utils.formatUnits(buyOut, token.decimals));
+              if(tokensReceived<=0) continue;
+              const buyPrice = tradeAmount / tokensReceived;        // USDC per 1 token
+              const usdcBack = parseFloat(ethers.utils.formatUnits(sellOut, USDC.decimals));
+              const sellPrice = usdcBack / tokensReceived;          // USDC per 1 token
+              const profit = usdcBack - tradeAmount;
+              const profitPct = (profit / tradeAmount) * 100;
+
+              // 🟢 75: Slippage-adjusted projections
+              const slipFactor = Math.max(0, 1 - (slippagePct/100));
+              const profitSlip = profit * slipFactor;
+              const profitPctSlip = profitPct * slipFactor;
+
+              // Row render
+              const tr = document.createElement("tr");
+              if(profitPctSlip > minProfitPct) tr.classList.add("profitable");
+
+              // Status symbols: 🚨 if “getAmountsOut” says profit (slip-adj)
+              let status = (profitPctSlip > minProfitPct) ? "🚨" : "❌";
+
+              const actionTd = document.createElement("td");
+              if(profitPctSlip > minProfitPct){
+                const btn = document.createElement("button");
+                btn.textContent = "Trade";
+                btn.onclick = ()=> guardedTrade({token, buyRouter, sellRouter, amountIn, symbol: sym, ui: {buyName,sellName,profitSlip}});
+                actionTd.appendChild(btn);
+              }
+
+              tr.innerHTML = `
+                <td>${sym}</td>
+                <td>${buyName}</td>
+                <td>${sellName}</td>
+                <td>${fmt(buyPrice,6)}</td>
+                <td>${fmt(sellPrice,6)}</td>
+                <td>${fmt(profitSlip,6)}</td>
+                <td>${fmt(profitPctSlip,2)}%</td>
+                <td>${status}</td>
+              `;
+              tr.appendChild(actionTd);
+              tbody.appendChild(tr);
+
+            }catch(e){
+              log(`Quote error ${sym} ${buyName}->${sellName}: ${e.message}`,"bad");
+            }
+          }
+        }
+      }
+
+      isScanning = false;
+      log("Scan complete ✓","good");
+    }
+
+    // ======== QUOTES ========
+
+    async function getAmountOutUSDCtoToken(routerAddr, tokenAddr, amountIn){ // 🟢 76
+      const router = new ethers.Contract(routerAddr, ROUTER_ABI, provider);
+      const path = [USDC.address, tokenAddr];
+      const amounts = await router.getAmountsOut(amountIn, path);
+      return amounts[1];
+    }
+
+    async function getAmountOutTokenToUSDC(routerAddr, tokenAddr, amountTokenIn){ // 🟢 77
+      const router = new ethers.Contract(routerAddr, ROUTER_ABI, provider);
+      const path = [tokenAddr, USDC.address];
+      const amounts = await router.getAmountsOut(amountTokenIn, path);
+      return amounts[1];
+    }
+
+    // ======== PROFIT GUARDS (THE 3 BIG ONES) ========
+
+    // 1) 🟢 Pre-send mempool static simulation via your contract
+    async function validateBeforeTrade(token, buyRouter, sellRouter, amountIn){ // 🟢 78
+      try{
+        // If your contract supports callStatic on the same function name:
+        const res = await contract.callStatic.executeArbitrage(
+          token.address, buyRouter, sellRouter, amountIn
+        );
+        // Expect positive int256 profit in USDC units (define in your contract)
+        return ethers.BigNumber.isBigNumber(res)
+          ? res.gt(0)
+          : (typeof res === "number" ? res > 0 : !!res);
+      }catch(e){
+        // Fallback: do two fresh router quotes right now as a quick sanity check
+        try{
+          const buyOut = await getAmountOutUSDCtoToken(buyRouter, token.address, amountIn);
+          const sellOut = await getAmountOutTokenToUSDC(sellRouter, token.address, buyOut);
+          return sellOut.gt(amountIn);
+        }catch{
+          return false;
+        }
+      }
+    }
+
+    // 2) 🟢 Deduct estimated gas **in USDC** before allowing trade
+    async function adjustForGasUSDC(token, buyRouter, sellRouter, amountIn){ // 🟢 79
+      // Build a populated tx and estimate gas; then convert native gas to USDC via on-chain price
+      try{
+        const populated = await contract.populateTransaction.executeArbitrage(
+          token.address, buyRouter, sellRouter, amountIn
+        );
+        // Estimate gas
+        const estGas = await signer.estimateGas({
+          to: CONTRACT_ADDRESS,
+          from: walletAddress,
+          data: populated.data,
+          value: 0
+        });
+        // Get gas price / EIP-1559 fields
+        const feeData = await provider.getFeeData();
+        // Prefer maxFeePerGas if present; else use gasPrice
+        const gasPrice = feeData.maxFeePerGas || feeData.gasPrice;
+        if(!gasPrice) return { gasUSDC: 0, gasInfo: "noGasPrice" };
+
+        const nativeCostWei = estGas.mul(gasPrice);
+
+        // Convert native (MATIC/ETH) to USDC using a router quote: 1 native -> USDC
+        const native1 = ethers.utils.parseEther("1");
+        const routerAny = Object.values(routers)[0];
+        const router = new ethers.Contract(routerAny, ROUTER_ABI, provider);
+        const nativeToUSDC = await router.getAmountsOut(native1, [WETH.address, USDC.address]);
+        const usdcPerNative = parseFloat(ethers.utils.formatUnits(nativeToUSDC[1], USDC.decimals)); // USDC per 1 native
+        const nativeCost = parseFloat(ethers.utils.formatEther(nativeCostWei)); // in native
+        const gasUSDC = nativeCost * usdcPerNative;
+
+        return { gasUSDC, gasInfo: `gas=${estGas.toString()} price=${ethers.utils.formatUnits(gasPrice,"gwei")} gwei` };
+      }catch(e){
+        log("Gas estimate failed: "+e.message,"warn");
+        return { gasUSDC: 0, gasInfo: "estimateFailed" };
+      }
+    }
+
+    // 3) 🟢 Private/Protect submission (UI + warnings)
+    function warnIfNotPrivateRPC(){ // 🟢 80
+      // We can’t reliably read the wallet’s RPC endpoint from the injected provider.
+      // Show an instructional warning if the user toggles "Use Private/Protect RPC".
+      const usePrivate = document.getElementById("usePrivateTx").checked;
+      const hint = document.getElementById("privateHint");
+      if(usePrivate){
+        hint.innerHTML = "Private mode ON. Ensure your wallet network RPC is set to a Protect/private endpoint; otherwise this will still go public mempool.";
+      }else{
+        hint.innerHTML = "Tip: For true private submission, set your wallet’s RPC to a Protect/private endpoint. This UI will warn if not detected.";
+      }
+    }
+
+    document.getElementById("usePrivateTx").addEventListener("change", warnIfNotPrivateRPC); // 🟢 81
+
+    // ======== GUARDED TRADE FLOW ========
+
+    async function guardedTrade({token, buyRouter, sellRouter, amountIn, symbol, ui}){ // 🟢 82
+      try{
+        // A) Fresh slippage-adjusted profitability re-check via quotes
+        const minProfitPct = parseFloat(document.getElementById("minProfitPct").value || "0");
+        const slippagePct = parseFloat(document.getElementById("slippagePct").value || "0");
+        const tradeAmount = parseFloat(document.getElementById("tradeAmount").value || "0");
+        const slipFactor = Math.max(0, 1 - (slippagePct/100));
+
+        const buyOut = await getAmountOutUSDCtoToken(buyRouter, token.address, amountIn);
+        const sellOut = await getAmountOutTokenToUSDC(sellRouter, token.address, buyOut);
+        const usdcBack = parseFloat(ethers.utils.formatUnits(sellOut, USDC.decimals));
+        const profit = (usdcBack - tradeAmount) * slipFactor;
+        const profitPct = (profit / tradeAmount) * 100;
+
+        if(!(profitPct > minProfitPct)){
+          log(`❌ Opportunity no longer meets min profit (${fmt(profitPct,2)}% < ${fmt(minProfitPct,2)}%)`);
+          return;
+        }
+
+        // B) Pre-send mempool callStatic with EXACT args
+        const stillValid = await validateBeforeTrade(token, buyRouter, sellRouter, amountIn);
+        if(!stillValid){
+          log("❌ Pre-send simulation indicates no profit (callStatic) — aborting");
+          return;
+        }
+
+        // C) Deduct estimated gas cost in USDC; require net > 0
+        const { gasUSDC, gasInfo } = await adjustForGasUSDC(token, buyRouter, sellRouter, amountIn);
+        const netProfitUSDC = profit - gasUSDC;
+        if(!(netProfitUSDC > 0)){
+          log(`⛽ Gas (${fmt(gasUSDC,6)} USDC; ${gasInfo}) would erase profit (${fmt(profit,6)} USDC) — skipping`);
+          return;
+        }
+
+        // D) Send tx; if user enabled private mode, we warn user to ensure Protect RPC
+        const usePrivate = document.getElementById("usePrivateTx").checked;
+        if(usePrivate){
+          log("🔒 Private mode: ensure your wallet RPC is a Protect/private endpoint.","warn");
+        }
+
+        // Populate and send
+        const populated = await contract.populateTransaction.executeArbitrage(
+          token.address, buyRouter, sellRouter, amountIn
+        );
+
+        // Try to set eip-1559 fields if available
+        const feeData = await provider.getFeeData();
+        if(feeData.maxPriorityFeePerGas) populated.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas;
+        if(feeData.maxFeePerGas)        populated.maxFeePerGas        = feeData.maxFeePerGas;
+
+        const tx = await signer.sendTransaction(populated);
+        log(`📤 Submitted tx: ${tx.hash} | ${symbol} ${ui.buyName}→${ui.sellName} | estGasUSDC=${fmt(gasUSDC,6)}`);
+        const rec = await tx.wait();
+        log(`✅ Trade mined in block ${rec.blockNumber} — refreshing balances`,"good");
+        await refreshBalances();
+
+      }catch(e){
+        log("Trade failed: "+e.message,"bad");
+      }
+    }
+
+    // ======== HELPERS ========
+
+    window.addEventListener("load", ()=>{
+      // 🟢 83: On load, try to show initial chain hint
+      if(window.ethereum){
+        provider = new ethers.providers.Web3Provider(window.ethereum);
+        provider.getNetwork().then(net=>{
+          document.getElementById("chainLabel").textContent = `${net.name || "chain"} (id ${net.chainId})`;
+        }).catch(()=>{});
+      }
+    });
+
+  </script>
+</body>
+</html>
+
